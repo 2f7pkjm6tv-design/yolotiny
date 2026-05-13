@@ -18,7 +18,7 @@ def evaluation_loop(args):
     filename_to_id = {img['file_name']: img['id'] for img in coco.dataset['images']}
     model = convert(args.model)
     model.eval()
-    img_dir = Path("../cocoapi/images")
+    img_dir = Path(args.GroundTruthImageDir)
 
     COCO80_TO_CATID = [
         1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
@@ -111,7 +111,7 @@ def main(args):
         return
     
     img_info = coco.loadImgs(img_id)[0]
-    img_path = f'../cocoapi/images/{img_info["file_name"]}'
+    img_path = f'{args.GroundTruthImageDir}/{img_info["file_name"]}'
     img = Image.open(img_path).convert("RGB")
 
     anns_ids = coco.getAnnIds(imgIds=img_id)
@@ -307,7 +307,12 @@ if __name__ == "__main__":
         default="../cocoapi/annotations/instances_val2017.json",
         help="Pfad zur Ground Truth COCO JSON"
     )
-
+    parser.add_argument(
+        "--GroundTruthImageDir",
+        type=str,
+        default="../cocoapi/images",
+        help="Pfad zu Ground Truth Bildern"
+    )
     parser.add_argument(
         "--Visualize",
         type=bool,
