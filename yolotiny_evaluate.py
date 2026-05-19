@@ -12,6 +12,68 @@ from pathlib import Path
 #evaluation_loop zur mAP Berechnung
 #main laedt zeigt Ground Truth und Predictions in einem Bild
 
+# fuer morgen: mAP Funktion aufteilen fuer die verschiedenen Grids und die fuer sich betrachten
+# per_grid einfuehren fuer den evaluation_loop und es in raw_core_model fortfuehren
+# raw_core_model per_grid nutzbar machen, raw_core_model ist schon implementiert
+
+COCO80_TO_CATID = [
+        1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+        22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42,
+        43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61,
+        62, 63, 64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 84,
+        85, 86, 87, 88, 89, 90
+    ]# nicht schoen aber erstmal noetig
+
+
+def prepare_detections(boxes, scores, labels, anns, img_size, label_mapping=COCO80_TO_CATID):
+    # 2. xyxy → xywh
+    boxes[:, 2:] = boxes[:, 2:] - boxes[:, :2]
+
+    # 3. Label-Mapping
+    labels = torch.tensor(
+        [COCO80_TO_CATID[int(l)] for l in labels],
+        dtype=labels.dtype, device=labels.device
+    )
+
+    # 4. Score-sortieren
+    mask   = torch.argsort(scores, descending=True)
+    boxes  = boxes[mask]
+    scores = scores[mask]
+    labels = labels[mask]
+
+    # 5. Confidence-Filter
+    '''
+    conf_mask = scores > 0.01
+    boxes     = boxes[conf_mask]
+    scores    = scores[conf_mask]
+    labels    = labels[conf_mask]
+    '''
+
+    # 6. Auf Originalbild skalieren
+    original_w, original_h = img_size
+    scale_x = original_w / args.input_size
+    scale_y = original_h / args.input_size
+    final_boxes_scaled = boxes.clone()
+    final_boxes_scaled[:, [0, 2]] *= scale_x
+    final_boxes_scaled[:, [1, 3]] *= scale_y
+
+    tp, fp, num_gt, num_gt_per_class, _ = match_detections_xywh_category_id(
+        final_boxes_scaled, labels, scores, anns, iou_threshold=args.iou
+    )
+
+    results = []
+
+    #ueberlegen, wie am geschicktesten jeweils die Grid Ergebnisse speichern, wahrscheinlcih results1 und 2
+    return {
+        'tp':               tp,
+        'fp':               fp,
+        'scores':           scores,
+        'labels':           labels,
+        'num_gt_per_class': num_gt_per_class,
+    }
+
+
+
 
 def evaluation_loop(args):
     coco = COCO(args.GroundTruthPath)
@@ -29,6 +91,8 @@ def evaluation_loop(args):
     ]
 
     all_results = []
+    result_grid1 = []
+    result_grid2 = []
 
     count = 0
     for img_path in sorted(img_dir.glob("*.jpg")):
@@ -36,56 +100,94 @@ def evaluation_loop(args):
         img_id = filename_to_id.get(img_path.name, None)
         anns   = coco.loadAnns(coco.getAnnIds(imgIds=img_id))
 
-        # 1. Inferenz
-        boxes, scores, labels = raw_core_model(img_path, model)
+        if args.per_grid:
+            (boxes1, boxes2), (scores1, scores2), (labels1, labels2) = raw_core_model(img_path, model, per_grid=True)
 
-        # 2. xyxy → xywh
-        boxes[:, 2:] = boxes[:, 2:] - boxes[:, :2]
+            res1 = prepare_detections(boxes1, scores1, labels1, anns, img.size)
+            res2 = prepare_detections(boxes2, scores2, labels2, anns, img.size)
 
-        # 3. Label-Mapping
-        labels = torch.tensor(
-            [COCO80_TO_CATID[int(l)] for l in labels],
-            dtype=labels.dtype, device=labels.device
-        )
+            # Falls prepare_detections ein Dict zurückgibt:
+            result_grid1.append(res1)
+            result_grid2.append(res2)
 
-        # 4. Score-sortieren
-        mask   = torch.argsort(scores, descending=True)
-        boxes  = boxes[mask]
-        scores = scores[mask]
-        labels = labels[mask]
 
-        # 5. Confidence-Filter
-        conf_mask = scores > 0.01
-        boxes     = boxes[conf_mask]
-        scores    = scores[conf_mask]
-        labels    = labels[conf_mask]
+            count += 1
 
-        # 6. Auf Originalbild skalieren
-        original_w, original_h = img.size
-        scale_x = original_w / args.input_size
-        scale_y = original_h / args.input_size
-        final_boxes_scaled = boxes.clone()
-        final_boxes_scaled[:, [0, 2]] *= scale_x
-        final_boxes_scaled[:, [1, 3]] *= scale_y
+            if count >= 1:  
+                break
 
-        # 7. Matching
-        tp, fp, num_gt, num_gt_per_class, _ = match_detections_xywh_category_id(
-            final_boxes_scaled, labels, scores, anns, iou_threshold=args.iou
-        )
 
-        all_results.append({
-            'tp':               tp,
-            'fp':               fp,
-            'scores':           scores,
-            'labels':           labels,
-            'num_gt_per_class': num_gt_per_class,
-        })
-        count += 1
+        else:
+            # 1. Inferenz
+            boxes, scores, labels = raw_core_model(img_path, model)
+            print('shapes:', boxes.shape, scores.shape, labels.shape)
 
-        if count >= 10:  
-            break
+            # 2. xyxy → xywh
+            boxes[:, 2:] = boxes[:, 2:] - boxes[:, :2]
+
+            # 3. Label-Mapping
+            labels = torch.tensor(
+                [COCO80_TO_CATID[int(l)] for l in labels],
+                dtype=labels.dtype, device=labels.device
+            )
+
+            # 4. Score-sortieren
+            mask   = torch.argsort(scores, descending=True)
+            boxes  = boxes[mask]
+            scores = scores[mask]
+            labels = labels[mask]
+
+            # 5. Confidence-Filter
+            '''
+            conf_mask = scores > 0.01
+            boxes     = boxes[conf_mask]
+            scores    = scores[conf_mask]
+            labels    = labels[conf_mask]
+            '''
+
+            # 6. Auf Originalbild skalieren
+            original_w, original_h = img.size
+            scale_x = original_w / args.input_size
+            scale_y = original_h / args.input_size
+            final_boxes_scaled = boxes.clone()
+            final_boxes_scaled[:, [0, 2]] *= scale_x
+            final_boxes_scaled[:, [1, 3]] *= scale_y
+
+            # 7. Matching
+            tp, fp, num_gt, num_gt_per_class, _ = match_detections_xywh_category_id(
+                final_boxes_scaled, labels, scores, anns, iou_threshold=args.iou
+            )
+
+            all_results.append({
+                'tp':               tp,
+                'fp':               fp,
+                'scores':           scores,
+                'labels':           labels,
+                'num_gt_per_class': num_gt_per_class,
+            })
+            count += 1
+
+            if count >= 1:  
+                break
 
     # 8. mAP berechnen
+    if args.per_grid:
+        print('types:', type(result_grid1), type(result_grid2))
+        map_grid1 = compute_map(result_grid1)
+        map_grid2 = compute_map(result_grid2)
+        print('map types:', type(map_grid1), type(map_grid2))
+        print(f"\nmAP@{args.iou:.2f} for grid 1: {map_grid1['mAP']:.4f}")
+        print(f"\nmAP@{args.iou:.2f} for grid 2: {map_grid2['mAP']:.4f}")
+        
+        # Optional: AP pro Klasse für jedes Grid anzeigen
+        # for cat_id, ap in sorted(results['AP_per_class'].items()):
+        #     print(f"  class {cat_id:3d}: AP = {ap:.4f}")
+
+        print('number of pictures evaluated:', count)
+
+        return map_grid1, map_grid2
+    
+
     results = compute_map(all_results)
     print(f"\nmAP@{args.iou:.2f}: {results['mAP']:.4f}")
     for cat_id, ap in sorted(results['AP_per_class'].items()):
@@ -94,7 +196,7 @@ def evaluation_loop(args):
     print('number of pictures evaluated:', count)
 
     return results
-# mAp funktion verstehen und evaluation_loop
+
 
 
 def main(args):
@@ -305,8 +407,9 @@ if __name__ == "__main__":
         "--GroundTruthPath",
         type=str,
         default="../cocoapi/annotations/instances_val2017.json",
-        help="Pfad zur Ground Truth COCO JSON"
+        help="Pfad zur Ground Truth COCO Annotation"
     )
+
     parser.add_argument(
         "--GroundTruthImageDir",
         type=str,
@@ -325,7 +428,14 @@ if __name__ == "__main__":
         default="./yolov4-tiny.onnx",
         help="Pfad zum ONNX-Modell"
     )
+    parser.add_argument(
+        "--per_grid",
+        type=bool,
+        default=True,
+        help="mAP pro Grid berechnen"
+    )
+
 
     args = parser.parse_args()
-    main(args)
+    #main(args)
     evaluation_loop(args)

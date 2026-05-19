@@ -57,7 +57,7 @@ def decode_yolo_output(output, anchors, num_classes, stride, device="cpu"):
     return boxes, scores, labels
 
 
-def raw_core_model(img_path, model):
+def raw_core_model(img_path, model, anchors_per_scale = [[(116, 90), (156, 198), (373, 326)],[(30, 61), (62, 45), (59, 119)]], strides = [32, 16], per_grid=False):
     img = Image.open(img_path).convert("RGB")
     transform = transforms.Compose([
         transforms.Resize((416, 416)),
@@ -69,26 +69,37 @@ def raw_core_model(img_path, model):
     with torch.no_grad(): # deaktiviert Gradientenberechnung für Inference(Model wird nur benutzt kein Training), effizienter und weniger Speicherverbrauch
         raw_outputs = model(input_batch)
         
-    anchors_per_scale = [
-        [(116, 90), (156, 198), (373, 326)],  # 20x20
-        [(30, 61), (62, 45), (59, 119)]       # 40x40
-        ]
+    if per_grid:
+        boxes1, scores1, labels1 = decode_yolo_output(raw_outputs[0], anchors_per_scale[0], 80, strides[0])
+        boxes2, scores2, labels2 = decode_yolo_output(raw_outputs[1], anchors_per_scale[1], 80, strides[1])
 
-    strides = [32, 16]
+        # torcch.cat macht Probleme: 'TypeError: cat(): argument 'tensors' (position 1) must be tuple of Tensors, not Tensor'
+        # boxes1, boxes2 = torch.cat(boxes1), torch.cat(boxes2)
+        # scores1, scores2 = torch.cat(scores1), torch.cat(scores2)
+        # labels1, labels2 = torch.cat(labels1), torch.cat(labels2)
 
-    all_boxes, all_scores, all_labels = [], [], []
+        # 'RuntimeError: stack expects each tensor to be equal size, but got [507, 4] at entry 0 and [2028, 4] at entry 1'
+        # boxes = torch.cat([boxes1, boxes2], dim=0)
+        # scores = torch.cat([scores1, scores2], dim=0)
+        # labels = torch.cat([labels1, labels2], dim=0)
 
-    for out, anchors, stride in zip(raw_outputs, anchors_per_scale, strides):
-        boxes, scores, labels = decode_yolo_output(out, anchors, 80, stride)
-        all_boxes.append(boxes)
-        all_scores.append(scores)
-        all_labels.append(labels)
+        return (boxes1, boxes2), (scores1, scores2), (labels1, labels2)
+    
 
-    boxes = torch.cat(all_boxes)
-    scores = torch.cat(all_scores)
-    labels = torch.cat(all_labels)
+    else:
+        all_boxes, all_scores, all_labels = [], [], []
 
-    return boxes, scores, labels
+        for out, anchors, stride in zip(raw_outputs, anchors_per_scale, strides):
+            boxes, scores, labels = decode_yolo_output(out, anchors, 80, stride)
+            all_boxes.append(boxes)
+            all_scores.append(scores)
+            all_labels.append(labels)
+
+        boxes = torch.cat(all_boxes)
+        scores = torch.cat(all_scores)
+        labels = torch.cat(all_labels)
+
+        return boxes, scores, labels
 
 
 
